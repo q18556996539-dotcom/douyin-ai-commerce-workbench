@@ -5,7 +5,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 type Asset = { name: string; url: string; kind: "image" | "frame" | "video" };
 type ScriptPlan = { id: number; title: string; badge: string; hook: string; body: string[]; cta: string; score: number };
 
-const stages = ["项目资料", "素材提取", "卖点分析", "剧本选择", "分镜提示词", "导出任务包"];
+const stages = ["项目资料", "素材提取", "卖点分析", "剧本选择", "分镜提示词", "最终结果"];
 
 const defaults = {
   name: "",
@@ -29,6 +29,7 @@ export default function Home() {
   const [videoLink, setVideoLink] = useState("");
   const [scripts, setScripts] = useState<ScriptPlan[]>([]);
   const [selected, setSelected] = useState(0);
+  const [referenceImages, setReferenceImages] = useState<Record<number, Asset>>({});
   const [notice, setNotice] = useState("项目数据仅保存在当前浏览器");
   const hydrated = useRef(false);
 
@@ -47,14 +48,30 @@ export default function Home() {
   const selectedScript = scripts.find((script) => script.id === selected) ?? scripts[0];
   const storyboard = useMemo(() => {
     if (!selectedScript) return [];
-    const lines = [selectedScript.hook, ...selectedScript.body, selectedScript.cta];
-    return lines.map((line, index) => ({
-      id: index + 1,
-      time: `${index * 2}-${Math.min((index + 1) * 2, 10)}s`,
-      shot: index === 0 ? "近景冲击" : index === lines.length - 1 ? "产品定格" : index % 2 ? "中近景实测" : "细节特写",
-      visual: index === 0 ? `0秒展示${project.pain || "核心痛点"}与商品强对比` : index === lines.length - 1 ? `人物手持${project.name || "商品"}，自然指向购买方向` : `用真实动作证明：${splitItems(project.features)[index - 1] || "核心卖点"}`,
-      line,
-    }));
+    const features = splitItems(project.features);
+    return [
+      {
+        id: 1,
+        time: "10秒独立镜头",
+        shot: "近景冲击＋实测开场",
+        visual: `0秒展示${project.pain || "核心痛点"}与${project.name || "商品"}的强对比，立即开始第一个真实测试`,
+        line: `${selectedScript.hook}${selectedScript.body[0]}`,
+      },
+      {
+        id: 2,
+        time: "10秒独立镜头",
+        shot: "中近景连续实测",
+        visual: `围绕${features[0] || "核心卖点"}与${features[1] || "使用效果"}完成独立闭环，清楚展示过程和结果`,
+        line: `${selectedScript.body[1]}${selectedScript.body[2]}`,
+      },
+      {
+        id: 3,
+        time: "10秒独立镜头",
+        shot: "场景覆盖＋产品收尾",
+        visual: `展示${features[2] || "多场景使用"}，最后人物手持${project.name || "商品"}自然收尾`,
+        line: selectedScript.cta,
+      },
+    ];
   }, [selectedScript, project]);
 
   function update(key: keyof typeof defaults, value: string) {
@@ -126,7 +143,7 @@ export default function Home() {
   }
 
   function promptFor(item: (typeof storyboard)[number]) {
-    return `9:16竖屏，10秒独立镜头中的${item.time}段落，真实手机拍摄质感。商品：${project.name || "待填写商品"}。景别：${item.shot}。画面：${item.visual}。动作紧凑自然，商品包装与上传素材一致。口播：${item.line}。画面禁止任何字幕、文字贴片、价格水印、时间码、故事板黑框；禁止凭空改变商品外观；只呈现有证据支持的卖点。`;
+    return `【核心目标】生成一段完整、独立的10秒抖音带货视频，不依赖前后镜头。\n\n【画面规格】9:16竖屏，真实手机实拍质感，明亮清晰，自然生活场景。\n\n【商品】${project.name || "待填写商品"}，包装、颜色、Logo与本镜头参考图严格一致。\n\n【镜头设计】${item.shot}。${item.visual}。0秒直接进入核心动作，每0.8-1.0秒有一个有效动作点；动作按1.3-1.4倍紧凑执行，把约13-14秒真实动作压缩进10秒。\n\n【口播】${item.line}\n\n【参考图规则】只参考本镜头下方对应的纯画面参考图；不要参考其他镜头；不要把故事板、黑框、标题栏或信息卡生成进视频。\n\n【禁止项】画面不要任何字幕、屏幕文字、价格贴片、水印、时间码、分镜栏；禁止凭空改变商品外观；禁止使用无证据支持的卖点；禁止慢动作、空镜、机械摆拍和无意义停顿。`;
   }
 
   async function copyPrompt(text: string) {
@@ -134,17 +151,30 @@ export default function Home() {
     setNotice("提示词已复制，可粘贴到豆包、千问或其他视频模型");
   }
 
-  function exportPackage() {
+  function setShotReference(shotId: number, event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setReferenceImages((current) => ({
+      ...current,
+      [shotId]: { name: file.name, url: URL.createObjectURL(file), kind: "image" },
+    }));
+    setNotice(`镜头${shotId}参考图已绑定，只会用于对应镜头`);
+  }
+
+  function referenceFor(shotId: number, index: number) {
+    if (referenceImages[shotId]) return referenceImages[shotId];
+    const candidates = assets.filter((asset) => asset.kind !== "video");
+    return candidates.length ? candidates[index % candidates.length] : null;
+  }
+
+  async function copyAllResults() {
     if (!selectedScript) { setNotice("请先生成并选择剧本"); return; }
-    const content = `# ${project.name || "抖音带货项目"}\n\n## 商品资料\n- 品类：${project.category}\n- 价格口径：${project.price}\n- 目标用户：${project.audience}\n- 核心痛点：${project.pain}\n- 卖点：${project.features}\n- 证据等级：${project.evidence}\n- 参考链接：${videoLink || "无"}\n\n## 已选剧本：${selectedScript.title}\n${[selectedScript.hook, ...selectedScript.body, selectedScript.cta].map((line, i) => `${i + 1}. ${line}`).join("\n")}\n\n## 分镜与视频提示词\n${storyboard.map((item) => `\n### 镜头 ${item.id}｜${item.time}\n- 景别：${item.shot}\n- 画面：${item.visual}\n- 口播：${item.line}\n\n\`\`\`text\n${promptFor(item)}\n\`\`\``).join("\n")}\n\n## 发布前检查\n- [ ] 价格、数量、功效与商品页一致\n- [ ] 每镜仅包含当前镜头台词\n- [ ] 参考图为无黑框、无字幕的纯画面\n- [ ] 未使用无法证明的绝对化卖点\n`;
-    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `${project.name || "douyin-project"}-生产任务包.md`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    setNotice("生产任务包已导出");
-    setStage(5);
+    const content = storyboard.map((item, index) => {
+      const ref = referenceFor(item.id, index);
+      return `镜头${["一", "二", "三", "四", "五"][index] || item.id}\n\n【视频提示词】\n${promptFor(item)}\n\n【对应参考图】\n${ref ? ref.name : "待上传或由GPT生成本镜头纯画面参考图"}`;
+    }).join("\n\n====================\n\n");
+    await navigator.clipboard.writeText(content);
+    setNotice("全部镜头提示词已按‘镜头＋参考图’顺序复制；图片仍在页面逐镜显示");
   }
 
   return (
@@ -163,7 +193,7 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div><p className="eyebrow">AI COMMERCE WORKFLOW</p><h1>新建带货视频项目</h1></div>
-          <div className="top-actions"><button className="ghost" onClick={loadSample}>载入示例</button><button className="primary" onClick={exportPackage}>导出任务包</button></div>
+          <div className="top-actions"><button className="ghost" onClick={loadSample}>载入示例</button><button className="primary" onClick={() => setStage(5)}>查看最终结果</button></div>
         </header>
 
         <div className="stepper">
@@ -216,10 +246,21 @@ export default function Home() {
         </section>}
 
         {stage >= 4 && <section className="panel storyboard-view">
-          <div className="panel-title"><div><p>STEP 05</p><h2>分镜与模型提示词</h2></div><span className="pill">每镜独立可复制</span></div>
-          <div className="story-list">{storyboard.map((item) => <article key={item.id} className="story-row"><div className="shot-index"><b>{String(item.id).padStart(2, "0")}</b><span>{item.time}</span></div><div className="shot-content"><div><span>{item.shot}</span><h3>{item.visual}</h3></div><p>口播：{item.line}</p><details><summary>查看完整视频提示词</summary><pre>{promptFor(item)}</pre></details></div><button className="copy" onClick={() => copyPrompt(promptFor(item))}>复制</button></article>)}</div>
+          <div className="panel-title"><div><p>{stage === 5 ? "FINAL DELIVERY" : "STEP 05"}</p><h2>{stage === 5 ? "最终结果｜逐镜头交付" : "分镜、提示词与参考图"}</h2></div><span className="pill">镜头提示词＋对应参考图</span></div>
+          <div className="delivery-note">最终结果按镜头连续展示，不生成文件夹。每张参考图只绑定当前镜头，必须是无黑框、无标题、无字幕的纯画面图。</div>
+          <div className="story-list">{storyboard.map((item, index) => {
+            const reference = referenceFor(item.id, index);
+            const chineseNumber = ["一", "二", "三", "四", "五"][index] || String(item.id);
+            return <article key={item.id} className="delivery-card">
+              <div className="delivery-head"><div><span>镜头{chineseNumber}</span><b>{item.time}</b></div><em>{item.shot}</em></div>
+              <div className="delivery-grid">
+                <section className="prompt-section"><div className="section-label"><strong>视频提示词</strong><button className="copy" onClick={() => copyPrompt(promptFor(item))}>一键复制</button></div><pre>{promptFor(item)}</pre></section>
+                <section className="reference-section"><div className="section-label"><strong>对应参考图</strong><label className="replace-image">{reference ? "替换参考图" : "上传参考图"}<input type="file" accept="image/*" onChange={(event) => setShotReference(item.id, event)}/></label></div>{reference ? <figure><img src={reference.url} alt={`镜头${chineseNumber}参考图`}/><figcaption>{reference.name}｜仅用于镜头{chineseNumber}</figcaption></figure> : <label className="reference-empty"><input type="file" accept="image/*" onChange={(event) => setShotReference(item.id, event)}/><b>＋</b><span>添加镜头{chineseNumber}纯画面参考图</span><small>无黑框、无标题、无字幕</small></label>}</section>
+              </div>
+            </article>;
+          })}</div>
           <div className="checklist"><strong>交付前自动检查</strong><span>✓ 每镜仅含当前台词</span><span>✓ 统一 9:16 竖屏</span><span>✓ 禁止字幕与文字贴片</span><span>△ 商品事实仍需人工核验</span></div>
-          <div className="panel-actions"><button className="secondary" onClick={() => setStage(3)}>返回选择剧本</button><button className="primary" onClick={exportPackage}>导出完整任务包</button></div>
+          <div className="panel-actions"><button className="secondary" onClick={() => setStage(3)}>返回选择剧本</button>{stage === 4 ? <button className="primary" onClick={() => setStage(5)}>确认最终结果</button> : <button className="primary" onClick={copyAllResults}>复制全部镜头提示词</button>}</div>
         </section>}
       </section>
     </main>
